@@ -88,18 +88,30 @@ log.info "Output file                  : ${params.out}"
 log.info ''
 
 
-// Split VCF
+workflow {
+  // sstats_ch.collectFile(name: "${params.out}", sort: { it.name }).set{pub_ch}
+  filePheno = Channel.fromPath(params.pheno)
+  fileCov = Channel.fromPath(params.cov)
+  fileVcf = Channel.fromPath(params.geno)
+  
+  fileIndex = Channel.fromPath("${params.geno}.tbi")
+  
+  tuple_files = preprocess(filePheno, fileCov, fileVcf)
+  chunks = split(fileVcf, fileIndex)
+  mvgwas(tuple_files, fileVcf, fileIndex, chunks)
+}
 
+// Split VCF
 process split {
  
     input:
 
-    file(vcf) from file(params.geno)
-    file(index) from file("${params.geno}.tbi")    
+    file(vcf) // from file(params.geno)
+    file(index) // from file("${params.geno}.tbi")    
 
     output:
     
-    file("chunk*") into chunks_ch    
+    file("chunk*") // into chunks_ch    
 
     script:
     """
@@ -115,17 +127,21 @@ process preprocess {
 
     input:
 
-    file(pheno) from file(params.pheno)
-    file(cov) from file(params.cov)
-    file(vcf) from file(params.geno)
+    // file(pheno) from file(params.pheno)
+    // file(cov) from file(params.cov)
+    // file(vcf) from file(params.geno)
+    path pheno_file
+    path cov_file
+    path vcf_file
 
     output:
 
-    tuple file("pheno_preproc.tsv.gz"), file("cov_preproc.tsv.gz") into preproc_ch
+    tuple file("pheno_preproc.tsv.gz"), file("cov_preproc.tsv.gz") // into preproc_ch
     
     script:
     """
-    preprocess.R --phenotypes $pheno --covariates $cov --genotypes $vcf --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose
+    echo "Pheno file is: " $pheno_file
+    preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose
     """
 }
 
@@ -136,35 +152,47 @@ process mvgwas {
 
     input:
 
-    tuple file(pheno), file(cov) from preproc_ch
-    file(vcf) from file(params.geno)
-    file(index) from file("${params.geno}.tbi")
-    each file(chunk) from chunks_ch
+    tuple file(pheno), file(cov) // from preproc_ch
+    file(vcf) // from file(params.geno)
+    file(index) // from file("${params.geno}.tbi")
+    each file(chunk) // from chunks_ch
 
     output:
 
-    file('sstats.*.txt') optional true into sstats_ch
+    file('sstats.*.txt') optional true // into sstats_ch
 
     script:
     """
-    chunknb=\$(basename $chunk | sed 's/chunk//')
-    if [[ \$(cut -f1 $chunk | sort | uniq -c | wc -l) -ge 2 ]]; then
+    echo "Chunks:" $chunk > ~/tmp.txt
+    chunknb=\$(basename -a $chunk | sed 's/chunk//')
+    echo "chunknb:" \$chunknb >> ~/tmp.txt
+    echo "--phenotypes" $pheno >> ~/tmp.txt
+    echo "--covariates" $cov >> ~/tmp.txt
+    echo "--genotypes" $vcf >> ~/tmp.txt
+
+    # kc: change -ge 2 to -ge 1
+    if [[ \$(cut -f1 $chunk | sort | uniq -c | wc -l) -ge 1 ]]; then
+        echo "entering if..." >> ~/tmp.txt
         k=1
         cut -f1 $chunk | sort | uniq | while read chr; do
-        region=\$(paste <(grep -P "^\$chr\t" $chunk | head -1) <(grep -P "^\$chr\t" $chunk | tail -1 | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
+        region=\$(paste <(grep -P "^\$chr\t" $chunk | head -n 1) <(grep -P "^\$chr\t" $chunk | tail -n 1 | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
+        echo "if region: [" \$region "]"n>> ~/tmp.txt
+        echo "--output" sstats.\$k.tmp >> ~/tmp.txt
         test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose 
         ((k++))
     done
-    cat sstats.*.tmp > sstats.\${chunknb}.txt
+    # cat sstats.*.tmp > sstats.\${chunknb}.txt
     else
-        region=\$(paste <(head -1 $chunk) <(tail -1 $chunk | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
-        test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose
+        echo "entering else..." >> ~/tmp.txt
+        region=\$(paste <(head -n 1 $chunk) <(tail -n 1 $chunk | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
+        echo "else region: [" \$region "]" >> ~/tmp.txt
+        echo "--output" sstats.\${chunknb}.txt >> ~/tmp.txt
+        # test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose
     fi
     """
 }
 
-sstats_ch.collectFile(name: "${params.out}", sort: { it.name }).set{pub_ch}
-
+// old: sstats_ch.collectFile(name: "${params.out}", sort: { it.name }).set{pub_ch}
 
 // Summary stats
 
@@ -188,4 +216,3 @@ process end {
     sed -i "1 s/^/CHR\tPOS\tID\tREF\tALT\tF($params.i)\tF(GT)\tF(${params.i}:GT)\tR2($params.i)\tR2(GT)\tR2(${params.i}:GT)\tP($params.i)\tP(GT)\tP(${params.i}:GT)\\n/" ${out}
     """
 }
-

@@ -42,8 +42,12 @@ opt <- parse_args(opt_parser)
 tabix.read.table.nochecknames <- function (tabixFile, tabixRange, 
                                            col.names = TRUE, 
                                            stringsAsFactors = FALSE) {
+    print("entering tabix.read.table.nochecknames")
+    cat("tabixFile:", tabixFile, "\n")
+    cat("tabixRange:", tabixRange, "\n")
+
     stopifnot(seqminer:::local.file.exists(tabixFile))
-    stopifnot(all(isTabixRange(tabixRange)))
+    stopifnot(all(seqminer::isTabixRange(tabixRange)))
     tabixFile <- path.expand(tabixFile)
     storage.mode(tabixFile) <- "character"
     storage.mode(tabixRange) <- "character"
@@ -102,6 +106,7 @@ cov.f <- opt$covariates
 geno.f <- opt$genotypes
 out.f <- opt$output
 region <- opt$region
+cat("I've got region=", region, "\n")
 
 set.seed(opt$seed)
 
