@@ -62,11 +62,13 @@ if (params.help) {
 // Check mandatory parameters
 
 if (!params.pheno) {
+    params.help
     exit 1, "Phenotype file not specified."
 } else if (!params.geno) {
     params.help
     exit 1, "Genotype not specified."
 } else if (!params.cov) {
+    params.help
     exit 1, "Covariate file not specified."
 }
 
@@ -88,26 +90,26 @@ log.info "Output file                  : ${params.out}"
 log.info ''
 
 
+// pipeline workflow
 workflow {
+
   // sstats_ch.collectFile(name: "${params.out}", sort: { it.name }).set{pub_ch}
   filePheno = Channel.fromPath(params.pheno)
   fileCov = Channel.fromPath(params.cov)
   fileGenoVcf = Channel.fromPath(params.geno)
   fileGenoTbi = Channel.fromPath("${params.geno}.tbi")
   
-  // fileIndex = Channel.fromPath("${params.geno}.tbi")
-  
-  // tuple_files = preprocess(filePheno, fileCov, fileVcf)
-  // chunks = split(fileVcf, fileIndex)
-  // mvgwas(tuple_files, fileVcf, fileIndex, chunks)
-  
-  // preprocess | flatten | split
+  // step 1: preprocess covariates and genotype files
   tuple_files = preprocess(filePheno, fileCov, fileGenoVcf)
+  
+  // step 2: split genotype file into smaller chunks
   chunks = split(fileGenoVcf, fileGenoTbi) | flatten
-  mvgwas(tuple_files, fileGenoVcf, fileGenoTbi, chunks) | end
+  
+  // perform multivariate GWAS analysis using MANTA and output results
+  mvgwas(tuple_files, fileGenoVcf, fileGenoTbi, chunks) | copy_result_files
 }
 
-// Split VCF
+// Step 1: Split VCF
 process split {
   
   debug true 
@@ -132,30 +134,8 @@ process split {
   """
 }
 
-process split_original {
- 
-    input:
 
-    file(vcf) // from file(params.geno)
-    file(index) // from file("${params.geno}.tbi")    
-
-    output:
-    
-    // file("chunk*") // into chunks_ch
-    path("chunk*")
-
-    script:
-    log.info "vcf-file: ${vcf}"  // e.g. eg.genotypes.vcf.gz
-    log.info "params.l: ${params.l}" // e.g. 500
-    """
-    bcftools query -f '%CHROM\t%POS\n' $vcf > positions
-    split -d -a 10 -l ${params.l} positions chunk
-    """
-}
-
-
-// Pre-process phenotypes and covariates
-
+// Step 2: Pre-process phenotypes and covariates
 process preprocess {
   
     debug true
@@ -176,59 +156,10 @@ process preprocess {
     """
 }
 
-process preprocess_2 {
-    debug true 
-
-    input:
-
-    // file(pheno) from file(params.pheno)
-    // file(cov) from file(params.cov)
-    // file(vcf) from file(params.geno)
-  
-    path params.pheno
-    // path cov_file
-    // path vcf_file
-
-    output:
-
-    tuple file("pheno_preproc.tsv.gz"), file("cov_preproc.tsv.gz") // into preproc_ch
-    
-    script:
-    """
-    echo "Pheno file is: " $pheno_file
-    echo "preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose"
-    preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose
-    """
-}
-
-process preprocess_original {
-    debug true 
-
-    input:
-
-    // file(pheno) from file(params.pheno)
-    // file(cov) from file(params.cov)
-    // file(vcf) from file(params.geno)
-    path pheno_file
-    path cov_file
-    path vcf_file
-
-    output:
-
-    tuple file("pheno_preproc.tsv.gz"), file("cov_preproc.tsv.gz") // into preproc_ch
-    
-    script:
-    """
-    echo "Pheno file is: " $pheno_file
-    echo "preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose"
-    preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose
-    """
-}
-
 
 // GWAS: testing (MANTA)
-
 process mvgwas {
+  
     debug true 
 
     input:
@@ -249,26 +180,26 @@ process mvgwas {
     echo "processing file " $chunk
     
     chunknb=\$(basename $chunk | sed 's/chunk//')
-
     echo "chunknb:" \$chunknb
     
-    # kc: change -ge 2 to -ge 1
+    # check for number of chromosomes
     if [[ \$(cut -f1 $chunk | sort | uniq -c | wc -l) -ge 2 ]]; then
         echo "entering if..."
         k=1
         cut -f1 $chunk | sort | uniq | while read chr; do
-        region=\$(paste <(grep -P "^\$chr\t" $chunk | head -n 1) <(grep -P "^\$chr\t" $chunk | tail -n 1 | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
+          region=\$(paste <(grep -P "^\$chr\t" $chunk | head -n 1) <(grep -P "^\$chr\t" $chunk | tail -n 1 | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
         
-        echo "if region: [" \$region "]"
-        echo "--output" sstats.\$k.tmp
-        echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose"
+          echo "if region: [" \$region "]"
+          echo "--output" sstats.\$k.tmp
+          echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose"
         
-        test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose 
+          test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose 
         
-        ((k++))
-    done
-    # cat sstats.*.tmp > sstats.\${chunknb}.txt
+          ((k++))
+      done
+      cat sstats.*.tmp > sstats.\${chunknb}.txt
     else
+        # only 1 chromosome
         echo "entering else..."
         
         region=\$(paste <(head -n 1 $chunk) <(tail -n 1 $chunk | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
@@ -282,62 +213,11 @@ process mvgwas {
     """
 }
 
-process mvgwas_original {
-    debug true 
-
-    input:
-
-    tuple file(pheno), file(cov) // from preproc_ch
-    file(vcf) // from file(params.geno)
-    file(index) // from file("${params.geno}.tbi")
-    each path(chunk) // file(chunk) // from chunks_ch
-
-    output:
-
-    path('sstats.*.txt') // optional true // into sstats_ch
-
-    script:
-    log.info "*** process mvgwas"
-    log.info "chunk: ${chunk}"
-    log.info "--phenotypes, pheno: ${pheno}"
-    
-    // chunknb=\$(basename -a $chunk | sed 's/chunk//')
-    """
-    chunknb=\$(basename $chunk | sed 's/chunk//')
-
-    echo "chunknb:" \$chunknb >> ~/tmp.txt
-    echo "--covariates" $cov >> ~/tmp.txt
-    echo "--genotypes" $vcf >> ~/tmp.txt
-
-    # kc: change -ge 2 to -ge 1
-    if [[ \$(cut -f1 $chunk | sort | uniq -c | wc -l) -ge 1 ]]; then
-        echo "entering if..." >> ~/tmp.txt
-        k=1
-        cut -f1 $chunk | sort | uniq | while read chr; do
-        region=\$(paste <(grep -P "^\$chr\t" $chunk | head -n 1) <(grep -P "^\$chr\t" $chunk | tail -n 1 | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
-        echo "if region: [" \$region "]"
-        echo "--output" sstats.\$k.tmp
-        echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose" >> ~/tmp.txt
-        test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose 
-        ((k++))
-    done
-    # cat sstats.*.tmp > sstats.\${chunknb}.txt
-    else
-        echo "entering else..." >> ~/tmp.txt
-        region=\$(paste <(head -n 1 $chunk) <(tail -n 1 $chunk | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
-        echo "else region: [" \$region "]"
-        echo "--output" sstats.\${chunknb}.txt
-        echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose" >> ~/tmp.txt
-        test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose
-    fi
-    """
-}
 
 // old: sstats_ch.collectFile(name: "${params.out}", sort: { it.name }).set{pub_ch}
 
-// Summary stats
-
-process end {
+// copy resulting summary statistics files
+process copy_result_files {
 
     publishDir "${params.dir}", mode: 'copy'     
 
