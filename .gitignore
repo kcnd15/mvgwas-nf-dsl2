@@ -7,6 +7,9 @@ docker/.docker
 trace*
 *log
 
+data
+*.tmp
+
 .Rproj.user
 .Rhistory
 *.Rproj

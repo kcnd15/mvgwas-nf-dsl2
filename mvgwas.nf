@@ -90,15 +90,16 @@ log.info ''
 
 workflow {
   // sstats_ch.collectFile(name: "${params.out}", sort: { it.name }).set{pub_ch}
-  filePheno = Channel.fromPath(params.pheno)
-  fileCov = Channel.fromPath(params.cov)
-  fileVcf = Channel.fromPath(params.geno)
+  // filePheno = Channel.fromPath(params.pheno)
+  // fileCov = Channel.fromPath(params.cov)
+  // fileVcf = Channel.fromPath(params.geno)
   
   fileIndex = Channel.fromPath("${params.geno}.tbi")
   
-  tuple_files = preprocess(filePheno, fileCov, fileVcf)
-  chunks = split(fileVcf, fileIndex)
-  mvgwas(tuple_files, fileVcf, fileIndex, chunks)
+  // tuple_files = preprocess(filePheno, fileCov, fileVcf)
+  // chunks = split(fileVcf, fileIndex)
+  // mvgwas(tuple_files, fileVcf, fileIndex, chunks)
+  preprocess
 }
 
 // Split VCF
@@ -111,9 +112,12 @@ process split {
 
     output:
     
-    file("chunk*") // into chunks_ch    
+    // file("chunk*") // into chunks_ch
+    path("chunk*")
 
     script:
+    log.info "vcf-file: ${vcf}"  // e.g. eg.genotypes.vcf.gz
+    log.info "params.l: ${params.l}" // e.g. 500
     """
     bcftools query -f '%CHROM\t%POS\n' $vcf > positions
     split -d -a 10 -l ${params.l} positions chunk
@@ -124,6 +128,32 @@ process split {
 // Pre-process phenotypes and covariates
 
 process preprocess {
+    debug true 
+
+    input:
+
+    // file(pheno) from file(params.pheno)
+    // file(cov) from file(params.cov)
+    // file(vcf) from file(params.geno)
+  
+    path params.pheno
+    // path cov_file
+    // path vcf_file
+
+    output:
+
+    tuple file("pheno_preproc.tsv.gz"), file("cov_preproc.tsv.gz") // into preproc_ch
+    
+    script:
+    """
+    echo "Pheno file is: " $pheno_file
+    echo "preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose"
+    preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose
+    """
+}
+
+process preprocess_original {
+    debug true 
 
     input:
 
@@ -141,6 +171,7 @@ process preprocess {
     script:
     """
     echo "Pheno file is: " $pheno_file
+    echo "preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose"
     preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose
     """
 }
@@ -149,24 +180,50 @@ process preprocess {
 // GWAS: testing (MANTA)
 
 process mvgwas {
+    debug true 
 
     input:
 
     tuple file(pheno), file(cov) // from preproc_ch
     file(vcf) // from file(params.geno)
     file(index) // from file("${params.geno}.tbi")
-    each file(chunk) // from chunks_ch
+    each path(chunk) // file(chunk) // from chunks_ch
+
+    output:
+
+    file('sstats.*.txt') optional true // into sstats_ch
+    
+    script:
+    log.info "logging processing of file ${chunk}"
+    """
+    echo "processing file " $chunk
+    """
+}
+
+process mvgwas_original {
+    debug true 
+
+    input:
+
+    tuple file(pheno), file(cov) // from preproc_ch
+    file(vcf) // from file(params.geno)
+    file(index) // from file("${params.geno}.tbi")
+    each path(chunk) // file(chunk) // from chunks_ch
 
     output:
 
     file('sstats.*.txt') optional true // into sstats_ch
 
     script:
+    log.info "*** process mvgwas"
+    log.info "chunk: ${chunk}"
+    log.info "--phenotypes, pheno: ${pheno}"
+    
+    // chunknb=\$(basename -a $chunk | sed 's/chunk//')
     """
-    echo "Chunks:" $chunk > ~/tmp.txt
-    chunknb=\$(basename -a $chunk | sed 's/chunk//')
+    chunknb=\$(basename $chunk | sed 's/chunk//')
+
     echo "chunknb:" \$chunknb >> ~/tmp.txt
-    echo "--phenotypes" $pheno >> ~/tmp.txt
     echo "--covariates" $cov >> ~/tmp.txt
     echo "--genotypes" $vcf >> ~/tmp.txt
 
@@ -178,6 +235,7 @@ process mvgwas {
         region=\$(paste <(grep -P "^\$chr\t" $chunk | head -n 1) <(grep -P "^\$chr\t" $chunk | tail -n 1 | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
         echo "if region: [" \$region "]"n>> ~/tmp.txt
         echo "--output" sstats.\$k.tmp >> ~/tmp.txt
+        echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose" >> ~/tmp.txt
         test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose 
         ((k++))
     done
@@ -187,7 +245,8 @@ process mvgwas {
         region=\$(paste <(head -n 1 $chunk) <(tail -n 1 $chunk | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
         echo "else region: [" \$region "]" >> ~/tmp.txt
         echo "--output" sstats.\${chunknb}.txt >> ~/tmp.txt
-        # test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose
+        echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose" >> ~/tmp.txt
+        test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose
     fi
     """
 }
