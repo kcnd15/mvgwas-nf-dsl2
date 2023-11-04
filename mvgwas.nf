@@ -17,6 +17,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+ 
+ // kcan: upgade to Nextflow DSL2
 
 
 // Define parameters
@@ -32,6 +34,7 @@ params.dir = 'result'
 params.out = 'mvgwas.tsv'
 params.help = false
 
+debug_flag = false // set to true for additional logging
 
 // Print usage
 
@@ -39,7 +42,8 @@ if (params.help) {
     log.info ''
     log.info 'mvgwas-nf: A pipeline for multivariate Genome-Wide Association Studies'
     log.info '=============================================================================================='
-    log.info 'Performs multi-trait GWAS using using MANTA (https://github.com/dgarrimar/manta)'
+    log.info 'Performs multi-trait GWAS using MANTA (https://github.com/dgarrimar/manta)'
+    log.info 'requires Nextflow DSL2'
     log.info ''
     log.info 'Usage: '
     log.info '    nextflow run mvgwas.nf [options]'
@@ -99,20 +103,20 @@ workflow {
   fileGenoVcf = Channel.fromPath(params.geno)
   fileGenoTbi = Channel.fromPath("${params.geno}.tbi")
   
-  // step 1: preprocess covariates and genotype files
-  tuple_files = preprocess(filePheno, fileCov, fileGenoVcf)
+  // step 1: preprocess phenotype and covariate data
+  tuple_files = preprocess_pheno_cov(filePheno, fileCov, fileGenoVcf)
   
   // step 2: split genotype file into smaller chunks
-  chunks = split(fileGenoVcf, fileGenoTbi) | flatten
+  chunks = split_genotype(fileGenoVcf, fileGenoTbi) | flatten
   
   // perform multivariate GWAS analysis using MANTA and output results
-  mvgwas(tuple_files, fileGenoVcf, fileGenoTbi, chunks) | copy_result_files
+  mvgwas_manta(tuple_files, fileGenoVcf, fileGenoTbi, chunks) | collect_summary_statistics
 }
 
-// Step 1: Split VCF
-process split {
+// Step 2: Split genotype VCF file
+process split_genotype {
   
-  debug true 
+  debug debug_flag 
   
   input:
   file(vcf) // from file(params.geno)
@@ -123,9 +127,11 @@ process split {
   
   script:
 
-  log.info "vcf-file: ${vcf}"  // e.g. eg.genotypes.vcf.gz
-  log.info "tbi-file: ${index}"
-  log.info "params.l: ${params.l}" // e.g. 500
+  if (debug_flag) {
+    log.info "vcf-file: ${vcf}"  // e.g. eg.genotypes.vcf.gz
+    log.info "tbi-file: ${index}"
+    log.info "params.l: ${params.l}" // e.g. 500
+  }
   
   """
   echo "splitting file" $vcf $index
@@ -135,10 +141,10 @@ process split {
 }
 
 
-// Step 2: Pre-process phenotypes and covariates
-process preprocess {
+// Step 1: Preprocess phenotype and covariate data
+process preprocess_pheno_cov {
   
-    debug true
+    debug debug_flag
     
     input:
     path pheno_file
@@ -157,10 +163,10 @@ process preprocess {
 }
 
 
-// GWAS: testing (MANTA)
-process mvgwas {
+// Step 3: Test for association between phenotypes and genetic variants using MANTA
+process mvgwas_manta {
   
-    debug true 
+    debug debug_flag 
 
     input:
 
@@ -174,7 +180,10 @@ process mvgwas {
     path('sstats.*.txt') // optional true // into sstats_ch
     
     script:
-    log.info "logging processing of file ${chunk}"
+    
+    if (debug_flag) {
+      log.info "logging processing of file ${chunk}"
+    }
     
     """
     echo "processing file " $chunk
@@ -216,9 +225,12 @@ process mvgwas {
 
 // old: sstats_ch.collectFile(name: "${params.out}", sort: { it.name }).set{pub_ch}
 
-// copy resulting summary statistics files
-process copy_result_files {
+// Step 4: collect resulting summary statistics
+process collect_summary_statistics {
+  
+    // creates an output text file containing the multi-trait GWAS summary statistics
 
+    debug debug_flag
     publishDir "${params.dir}", mode: 'copy'     
 
     input:
@@ -229,9 +241,11 @@ process copy_result_files {
 
     script:
     
-    log.info("process end")
-    log.info("params.i: ${params.i}")
-    log.info("input file: ${out}")
+    if (debug_flag) {
+      log.info("process end")
+      log.info("params.i: ${params.i}")
+      log.info("input file: ${out}")
+    }
     
     if (params.i == 'none')
     """
