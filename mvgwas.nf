@@ -90,20 +90,49 @@ log.info ''
 
 workflow {
   // sstats_ch.collectFile(name: "${params.out}", sort: { it.name }).set{pub_ch}
-  // filePheno = Channel.fromPath(params.pheno)
-  // fileCov = Channel.fromPath(params.cov)
-  // fileVcf = Channel.fromPath(params.geno)
+  filePheno = Channel.fromPath(params.pheno)
+  fileCov = Channel.fromPath(params.cov)
+  fileGenoVcf = Channel.fromPath(params.geno)
+  fileGenoTbi = Channel.fromPath("${params.geno}.tbi")
   
-  fileIndex = Channel.fromPath("${params.geno}.tbi")
+  // fileIndex = Channel.fromPath("${params.geno}.tbi")
   
   // tuple_files = preprocess(filePheno, fileCov, fileVcf)
   // chunks = split(fileVcf, fileIndex)
   // mvgwas(tuple_files, fileVcf, fileIndex, chunks)
-  preprocess
+  
+  // preprocess | flatten | split
+  tuple_files = preprocess(filePheno, fileCov, fileGenoVcf)
+  chunks = split(fileGenoVcf, fileGenoTbi) | flatten
+  mvgwas(tuple_files, fileGenoVcf, fileGenoTbi, chunks)
 }
 
 // Split VCF
 process split {
+  
+  debug true 
+  
+  input:
+  file(vcf) // from file(params.geno)
+  file(index) // from file("${params.geno}.tbi")
+  
+  output:
+  path("chunk*")
+  
+  script:
+
+  log.info "vcf-file: ${vcf}"  // e.g. eg.genotypes.vcf.gz
+  log.info "tbi-file: ${index}"
+  log.info "params.l: ${params.l}" // e.g. 500
+  
+  """
+  echo "splitting file" $vcf $index
+  bcftools query -f '%CHROM\t%POS\n' $vcf > positions
+  split -d -a 10 -l ${params.l} positions chunk
+  """
+}
+
+process split_original {
  
     input:
 
@@ -128,6 +157,26 @@ process split {
 // Pre-process phenotypes and covariates
 
 process preprocess {
+  
+    debug true
+    
+    input:
+    path pheno_file
+    path cov_file
+    path vcf_file
+    
+    output:
+    tuple file("pheno_preproc.tsv.gz"), file("cov_preproc.tsv.gz")
+    
+    script:
+    """
+    echo "preprocessing files" $pheno_file $cov_file $vcf_file
+    echo "preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose"
+    preprocess.R --phenotypes $pheno_file --covariates $cov_file --genotypes $vcf_file --out_pheno pheno_preproc.tsv.gz --out_cov cov_preproc.tsv.gz --verbose
+    """
+}
+
+process preprocess_2 {
     debug true 
 
     input:
@@ -195,8 +244,41 @@ process mvgwas {
     
     script:
     log.info "logging processing of file ${chunk}"
+    
     """
     echo "processing file " $chunk
+    
+    chunknb=\$(basename $chunk | sed 's/chunk//')
+
+    echo "chunknb:" \$chunknb
+    
+    # kc: change -ge 2 to -ge 1
+    if [[ \$(cut -f1 $chunk | sort | uniq -c | wc -l) -ge 2 ]]; then
+        echo "entering if..."
+        k=1
+        cut -f1 $chunk | sort | uniq | while read chr; do
+        region=\$(paste <(grep -P "^\$chr\t" $chunk | head -n 1) <(grep -P "^\$chr\t" $chunk | tail -n 1 | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
+        
+        echo "if region: [" \$region "]"
+        echo "--output" sstats.\$k.tmp
+        echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose"
+        
+        test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose 
+        
+        ((k++))
+    done
+    # cat sstats.*.tmp > sstats.\${chunknb}.txt
+    else
+        echo "entering else..."
+        
+        region=\$(paste <(head -n 1 $chunk) <(tail -n 1 $chunk | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
+        
+        echo "else region: [" \$region "]"
+        echo "--output" sstats.\${chunknb}.txt
+        echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose"
+        
+        test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose
+    fi
     """
 }
 
