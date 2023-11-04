@@ -104,7 +104,7 @@ workflow {
   // preprocess | flatten | split
   tuple_files = preprocess(filePheno, fileCov, fileGenoVcf)
   chunks = split(fileGenoVcf, fileGenoTbi) | flatten
-  mvgwas(tuple_files, fileGenoVcf, fileGenoTbi, chunks)
+  mvgwas(tuple_files, fileGenoVcf, fileGenoTbi, chunks) | end
 }
 
 // Split VCF
@@ -240,7 +240,7 @@ process mvgwas {
 
     output:
 
-    file('sstats.*.txt') optional true // into sstats_ch
+    path('sstats.*.txt') // optional true // into sstats_ch
     
     script:
     log.info "logging processing of file ${chunk}"
@@ -294,7 +294,7 @@ process mvgwas_original {
 
     output:
 
-    file('sstats.*.txt') optional true // into sstats_ch
+    path('sstats.*.txt') // optional true // into sstats_ch
 
     script:
     log.info "*** process mvgwas"
@@ -315,8 +315,8 @@ process mvgwas_original {
         k=1
         cut -f1 $chunk | sort | uniq | while read chr; do
         region=\$(paste <(grep -P "^\$chr\t" $chunk | head -n 1) <(grep -P "^\$chr\t" $chunk | tail -n 1 | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
-        echo "if region: [" \$region "]"n>> ~/tmp.txt
-        echo "--output" sstats.\$k.tmp >> ~/tmp.txt
+        echo "if region: [" \$region "]"
+        echo "--output" sstats.\$k.tmp
         echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose" >> ~/tmp.txt
         test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\$k.tmp --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose 
         ((k++))
@@ -325,8 +325,8 @@ process mvgwas_original {
     else
         echo "entering else..." >> ~/tmp.txt
         region=\$(paste <(head -n 1 $chunk) <(tail -n 1 $chunk | cut -f2) | sed 's/\t/:/' | sed 's/\t/-/')
-        echo "else region: [" \$region "]" >> ~/tmp.txt
-        echo "--output" sstats.\${chunknb}.txt >> ~/tmp.txt
+        echo "else region: [" \$region "]"
+        echo "--output" sstats.\${chunknb}.txt
         echo "test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose" >> ~/tmp.txt
         test.R --phenotypes $pheno --covariates $cov --genotypes $vcf --region "\$region" --output sstats.\${chunknb}.txt --min_nb_ind_geno ${params.ng} -t ${params.t} -i ${params.i} --verbose
     fi
@@ -342,12 +342,17 @@ process end {
     publishDir "${params.dir}", mode: 'copy'     
 
     input:
-    file(out) from pub_ch
+    file(out) // from pub_ch
 
     output:
-    file(out) into end_ch
+    file(out) // into end_ch
 
     script:
+    
+    log.info("process end")
+    log.info("params.i: ${params.i}")
+    log.info("input file: ${out}")
+    
     if (params.i == 'none')
     """
     sed -i "1 s/^/CHR\tPOS\tID\tREF\tALT\tF\tR2\tP\\n/" ${out}
